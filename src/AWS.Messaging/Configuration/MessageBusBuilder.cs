@@ -344,7 +344,7 @@ public class MessageBusBuilder : IMessageBusBuilder
         if (_experimentalFeaturesEnabled)
         {
             _serviceCollection.AddSingleton<IEnvelopeSerializer, EnvelopeSerializerUtf8JsonWriter>();
-            _serviceCollection.TryAddSingleton<IMessageSerializer, MessageSerializerUtf8JsonWriter>();
+            _serviceCollection.TryAddSingleton<IMessageSerializer, MessageSerializerUtf8Json>();
 
         }
         else

@@ -13,13 +13,13 @@ namespace AWS.Messaging.Serialization;
 /// This is the performance based implementation of <see cref="IMessageSerializer"/> used by the framework.
 /// It uses System.Text.Json to serialize and deserialize messages.
 /// </summary>
-internal sealed partial class MessageSerializerUtf8JsonWriter : IMessageSerializer, IMessageSerializerUtf8JsonWriter
+internal sealed partial class MessageSerializerUtf8Json : IMessageSerializer, IMessageSerializerUtf8Json
 {
-    private readonly ILogger<MessageSerializerUtf8JsonWriter> _logger;
+    private readonly ILogger<MessageSerializerUtf8Json> _logger;
     private readonly IMessageConfiguration _messageConfiguration;
     private readonly JsonSerializerContext? _jsonSerializerContext;
 
-    public MessageSerializerUtf8JsonWriter(ILogger<MessageSerializerUtf8JsonWriter> logger, IMessageConfiguration messageConfiguration, IMessageJsonSerializerContextContainer jsonContextContainer)
+    public MessageSerializerUtf8Json(ILogger<MessageSerializerUtf8Json> logger, IMessageConfiguration messageConfiguration, IMessageJsonSerializerContextContainer jsonContextContainer)
     {
         _logger = logger;
         _messageConfiguration= messageConfiguration;
@@ -147,6 +147,74 @@ internal sealed partial class MessageSerializerUtf8JsonWriter : IMessageSerializ
         {
             Logs.FailedToSerializeMessageException(_logger, ex);
             throw new FailedToSerializeApplicationMessageException("Failed to serialize application message into a string", ex);
+        }
+    }
+
+    /// <inheritdoc/>
+    /// <exception cref="FailedToDeserializeApplicationMessageException"></exception>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026",
+        Justification = "Consumers relying on trimming would have been required to call the AddAWSMessageBus overload that takes in JsonSerializerContext that will be used here to avoid the call that requires unreferenced code.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL3050",
+        Justification = "Consumers relying on trimming would have been required to call the AddAWSMessageBus overload that takes in JsonSerializerContext that will be used here to avoid the call that requires unreferenced code.")]
+    public object Deserialize(ReadOnlySpan<byte> utf8Json, Type deserializedType)
+    {
+        try
+        {
+            // Do not log content to avoid allocations; keep the no-content log path.
+            Logs.DeserializingMessage(_logger, deserializedType);
+
+            if (_jsonSerializerContext != null)
+            {
+                return JsonSerializer.Deserialize(utf8Json, deserializedType, _jsonSerializerContext) ?? throw new JsonException("The deserialized application message is null.");
+            }
+            else
+            {
+                return JsonSerializer.Deserialize(utf8Json, deserializedType, _messageConfiguration.SerializationOptions.SystemTextJsonOptions) ?? throw new JsonException("The deserialized application message is null.");
+            }
+        }
+        catch (JsonException) when (!_messageConfiguration.LogMessageContent)
+        {
+            Logs.FailedToDeserializeMessage(_logger, deserializedType);
+            throw new FailedToDeserializeApplicationMessageException($"Failed to deserialize application message into an instance of {deserializedType}.");
+        }
+        catch (Exception ex)
+        {
+            Logs.FailedToDeserializeMessageException(_logger, ex, deserializedType);
+            throw new FailedToDeserializeApplicationMessageException($"Failed to deserialize application message into an instance of {deserializedType}.", ex);
+        }
+    }
+
+    /// <inheritdoc/>
+    /// <exception cref="FailedToDeserializeApplicationMessageException"></exception>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026",
+        Justification = "Consumers relying on trimming would have been required to call the AddAWSMessageBus overload that takes in JsonSerializerContext that will be used here to avoid the call that requires unreferenced code.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("ReflectionAnalysis", "IL3050",
+        Justification = "Consumers relying on trimming would have been required to call the AddAWSMessageBus overload that takes in JsonSerializerContext that will be used here to avoid the call that requires unreferenced code.")]
+    public object Deserialize(ref Utf8JsonReader reader, Type deserializedType)
+    {
+        try
+        {
+            // Reader-based path; avoid logging content.
+            Logs.DeserializingMessage(_logger, deserializedType);
+
+            if (_jsonSerializerContext != null)
+            {
+                return JsonSerializer.Deserialize(ref reader, deserializedType, _jsonSerializerContext) ?? throw new JsonException("The deserialized application message is null.");
+            }
+            else
+            {
+                return JsonSerializer.Deserialize(ref reader, deserializedType, _messageConfiguration.SerializationOptions.SystemTextJsonOptions) ?? throw new JsonException("The deserialized application message is null.");
+            }
+        }
+        catch (JsonException) when (!_messageConfiguration.LogMessageContent)
+        {
+            Logs.FailedToDeserializeMessage(_logger, deserializedType);
+            throw new FailedToDeserializeApplicationMessageException($"Failed to deserialize application message into an instance of {deserializedType}.");
+        }
+        catch (Exception ex)
+        {
+            Logs.FailedToDeserializeMessageException(_logger, ex, deserializedType);
+            throw new FailedToDeserializeApplicationMessageException($"Failed to deserialize application message into an instance of {deserializedType}.", ex);
         }
     }
 

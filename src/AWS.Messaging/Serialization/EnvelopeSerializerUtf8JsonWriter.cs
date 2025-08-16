@@ -37,7 +37,7 @@ internal class EnvelopeSerializerUtf8JsonWriter : IEnvelopeSerializer
     private readonly IMessageSourceHandler _messageSourceHandler;
     private readonly ILogger<EnvelopeSerializer> _logger;
 
-    private readonly IMessageSerializerUtf8JsonWriter? _messageSerializerUtf8Json;
+    private readonly IMessageSerializerUtf8Json? _messageSerializerUtf8Json;
 
     // Order matters for the SQS parser (must be last), but SNS and EventBridge parsers
     // can be in any order since they check for different, mutually exclusive properties
@@ -63,7 +63,7 @@ internal class EnvelopeSerializerUtf8JsonWriter : IEnvelopeSerializer
         _messageIdGenerator = messageIdGenerator;
         _messageSourceHandler = messageSourceHandler;
 
-        _messageSerializerUtf8Json = messageSerializer as IMessageSerializerUtf8JsonWriter;
+        _messageSerializerUtf8Json = messageSerializer as IMessageSerializerUtf8Json;
     }
 
     /// <inheritdoc/>
