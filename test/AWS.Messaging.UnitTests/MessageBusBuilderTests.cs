@@ -696,7 +696,7 @@ public class MessageBusBuilderTests
         var envelopeSerializer = serviceProvider.GetRequiredService<IEnvelopeSerializer>();
         var messageSerializer = serviceProvider.GetRequiredService<IMessageSerializer>();
 
-        Assert.IsType<EnvelopeSerializerUtf8JsonWriter>(envelopeSerializer);
+        Assert.IsType<EnvelopeSerializerUtf8Json>(envelopeSerializer);
         Assert.IsType<MessageSerializerUtf8Json>(messageSerializer);
     }
 

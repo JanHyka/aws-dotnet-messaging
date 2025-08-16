@@ -16,7 +16,7 @@ namespace AWS.Messaging.Serialization;
 /// <summary>
 /// The performance based implementation of <see cref="IEnvelopeSerializer"/> used by the framework.
 /// </summary>
-internal class EnvelopeSerializerUtf8JsonWriter : IEnvelopeSerializer
+internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
 {
     private Uri? MessageSource { get; set; }
     private const string CLOUD_EVENT_SPEC_VERSION = "1.0";
@@ -48,7 +48,15 @@ internal class EnvelopeSerializerUtf8JsonWriter : IEnvelopeSerializer
         new SQSMessageParser() // Fallback parser - must be last
     };
 
-    public EnvelopeSerializerUtf8JsonWriter(
+    // Reader-based parsers (UTF-8 path). Order matters: fallback SQS must be last.
+    private static readonly IMessageParserUtf8[] s_utf8Parsers = new IMessageParserUtf8[]
+    {
+        new SNSMessageParserUtf8(),
+        new EventBridgeMessageParserUtf8(),
+        new SQSMessageParserUtf8()
+    };
+
+    public EnvelopeSerializerUtf8Json(
         ILogger<EnvelopeSerializer> logger,
         IMessageConfiguration messageConfiguration,
         IMessageSerializer messageSerializer,
@@ -209,6 +217,24 @@ internal class EnvelopeSerializerUtf8JsonWriter : IEnvelopeSerializer
             _logger.LogError(ex, "Failed to create a {MessageEnvelopeName}", nameof(MessageEnvelope));
             throw new FailedToCreateMessageEnvelopeException($"Failed to create {nameof(MessageEnvelope)}", ex);
         }
+    }
+
+    // New UTF-8 reader-based outer wrapper parsing. Returns inner payload bytes and metadata.
+    private async Task<(ReadOnlyMemory<byte> MessageBody, MessageMetadata Metadata)> ParseOuterWrapperUtf8Async(Message sqsMessage)
+    {
+        var body = await InvokePreDeserializationCallback(sqsMessage.Body);
+        var utf8 = System.Text.Encoding.UTF8.GetBytes(body);
+
+        foreach (var parser in s_utf8Parsers)
+        {
+            if (parser.TryParse(utf8, sqsMessage, out var inner, out var metadata))
+            {
+                return (inner, metadata);
+            }
+        }
+
+        // Should not happen because SQS fallback always matches
+        return (utf8, new MessageMetadata());
     }
 
     private bool IsJsonContentType(string? dataContentType)

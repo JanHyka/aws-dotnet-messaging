@@ -7,7 +7,7 @@ using Xunit;
 
 namespace AWS.Messaging.UnitTests.SerializationTests;
 
-public class EnvelopeSerializerUtf8JsonWriterTests : EnvelopeSerializerTestsBase
+public class EnvelopeSerializerUtf8JsonTests : EnvelopeSerializerTestsBase
 {
     protected override bool EnableExperimentalFeatures => true;
 
@@ -22,7 +22,7 @@ public class EnvelopeSerializerUtf8JsonWriterTests : EnvelopeSerializerTestsBase
             // ASSERT
             Assert.NotNull(envelopeSerializer);
 
-            Assert.IsType<EnvelopeSerializerUtf8JsonWriter>(envelopeSerializer);
+            Assert.IsType<EnvelopeSerializerUtf8Json>(envelopeSerializer);
         }
     }
 }
