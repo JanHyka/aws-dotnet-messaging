@@ -1,11 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-using System;
-using System.Buffers;
-using System.Text;
-using System.Text.Json;
 using Amazon.SQS.Model;
+using AWS.Messaging.Serialization.Helpers;
 
 namespace AWS.Messaging.Serialization.Parsers;
 
@@ -21,8 +18,9 @@ internal interface IMessageParserUtf8
     /// </summary>
     /// <param name="utf8Payload">The input payload as UTF-8 bytes (memory-backed to allow zero-copy slicing).</param>
     /// <param name="originalMessage">The original SQS message for harvesting SQS metadata.</param>
+    /// <param name="pool">Array pool scope for temporary buffer rentals.</param>
     /// <param name="innerPayload">The extracted inner payload as UTF-8 bytes.</param>
     /// <param name="metadata">The extracted metadata (implementation may include SQS metadata).</param>
     /// <returns>True if this parser recognized and parsed the payload; otherwise false.</returns>
-    bool TryParse(ReadOnlyMemory<byte> utf8Payload, Message originalMessage, out ReadOnlyMemory<byte> innerPayload, out MessageMetadata metadata);
+    bool TryParse(ReadOnlyMemory<byte> utf8Payload, Message originalMessage, ArrayPoolScope pool, out ReadOnlyMemory<byte> innerPayload, out MessageMetadata metadata);
 }

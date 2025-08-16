@@ -6,12 +6,13 @@ using System.Text.Json;
 using Amazon.SQS.Model;
 using AWS.Messaging.Internal;
 using AWS.Messaging.Serialization.Handlers;
+using AWS.Messaging.Serialization.Helpers;
 
 namespace AWS.Messaging.Serialization.Parsers;
 
 internal sealed class SNSMessageParserUtf8 : IMessageParserUtf8
 {
-    public bool TryParse(ReadOnlyMemory<byte> utf8Payload, Message originalMessage, out ReadOnlyMemory<byte> innerPayload, out MessageMetadata metadata)
+    public bool TryParse(ReadOnlyMemory<byte> utf8Payload, Message originalMessage, ArrayPoolScope pool, out ReadOnlyMemory<byte> innerPayload, out MessageMetadata metadata)
     {
         innerPayload = default;
         metadata = default!;
@@ -85,25 +86,10 @@ internal sealed class SNSMessageParserUtf8 : IMessageParserUtf8
                 case "Message":
                     if (reader.TokenType == JsonTokenType.String)
                     {
-                        if (!reader.ValueIsEscaped && !reader.HasValueSequence)
-                        {
-                            // Fast path: unescaped contiguous value -> copy raw UTF-8 bytes
-                            var span = reader.ValueSpan;
-                            var bytes = new byte[span.Length];
-                            span.CopyTo(bytes);
-                            messageBytes = bytes;
-                        }
-                        else
-                        {
-                            // Fallback: materialize string to correctly unescape, then re-encode
-                            var inner = reader.GetString();
-                            if (string.IsNullOrEmpty(inner)) return false;
-                            messageBytes = Encoding.UTF8.GetBytes(inner);
-                        }
+                        messageBytes = Utf8JsonReaderHelper.UnescapeValue(ref reader, pool);
                     }
                     else if (reader.TokenType == JsonTokenType.StartObject || reader.TokenType == JsonTokenType.StartArray)
                     {
-                        // JSON object in Message; capture zero-copy slice over original payload
                         var start = (int)reader.TokenStartIndex;
                         reader.Skip();
                         var end = (int)reader.BytesConsumed;

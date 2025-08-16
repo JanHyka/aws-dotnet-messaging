@@ -1,16 +1,16 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-using System.Text;
 using System.Text.Json;
 using Amazon.SQS.Model;
 using AWS.Messaging.Serialization.Handlers;
+using AWS.Messaging.Serialization.Helpers;
 
 namespace AWS.Messaging.Serialization.Parsers;
 
 internal sealed class EventBridgeMessageParserUtf8 : IMessageParserUtf8
 {
-    public bool TryParse(ReadOnlyMemory<byte> utf8Payload, Message originalMessage, out ReadOnlyMemory<byte> innerPayload, out MessageMetadata metadata)
+    public bool TryParse(ReadOnlyMemory<byte> utf8Payload, Message originalMessage, ArrayPoolScope pool, out ReadOnlyMemory<byte> innerPayload, out MessageMetadata metadata)
     {
         innerPayload = default;
         metadata = default!;
@@ -53,21 +53,7 @@ internal sealed class EventBridgeMessageParserUtf8 : IMessageParserUtf8
                     }
                     else if (reader.TokenType == JsonTokenType.String)
                     {
-                        if (!reader.ValueIsEscaped && !reader.HasValueSequence)
-                        {
-                            // Copy raw unescaped UTF-8 bytes directly (avoids string + re-encode)
-                            var span = reader.ValueSpan;
-                            var bytes = new byte[span.Length];
-                            span.CopyTo(bytes);
-                            detailBytes = bytes;
-                        }
-                        else
-                        {
-                            // Fallback: materialize to string to correctly unescape, then re-encode
-                            var detail = reader.GetString();
-                            if (detail is null) return false;
-                            detailBytes = Encoding.UTF8.GetBytes(detail);
-                        }
+                        detailBytes = Utf8JsonReaderHelper.UnescapeValue(ref reader, pool);
                     }
                     else
                     {

@@ -194,8 +194,10 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
     {
         try
         {
+            using var arrayPoolScope = new ArrayPoolScope(_messageConfiguration.SerializationOptions.CleanRentedBuffers);
+
             // Get the raw envelope JSON and metadata from the appropriate wrapper (SNS/EventBridge/SQS) using UTF-8 path
-            var (envelopeBytes, metadata) = await ParseOuterWrapperUtf8Async(sqsMessage);
+            var (envelopeBytes, metadata) = await ParseOuterWrapperUtf8Async(sqsMessage, arrayPoolScope);
 
             // Create and populate the envelope with the correct type
             var (envelope, subscriberMapping) = DeserializeEnvelopeUtf8(envelopeBytes);
@@ -221,16 +223,18 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
     }
 
     // New UTF-8 reader-based outer wrapper parsing. Returns inner payload bytes and metadata.
-    private async Task<(ReadOnlyMemory<byte> MessageBody, MessageMetadata Metadata)> ParseOuterWrapperUtf8Async(Message sqsMessage)
+    private async Task<(ReadOnlyMemory<byte> MessageBody, MessageMetadata Metadata)> ParseOuterWrapperUtf8Async(Message sqsMessage, ArrayPoolScope pool)
     {
         var body = await InvokePreDeserializationCallback(sqsMessage.Body);
         // Use a single backing array to allow zero-copy slicing in parsers
-        var utf8 = Encoding.UTF8.GetBytes(body);
-        var mem = new ReadOnlyMemory<byte>(utf8);
+        var bytesNeeded = Encoding.UTF8.GetByteCount(body);
+        var utf8 = pool.GetBuffer(bytesNeeded);
+        var written = Encoding.UTF8.GetBytes(body.AsSpan(), utf8);
+        var mem = new ReadOnlyMemory<byte>(utf8, 0, written);
 
         foreach (var parser in s_utf8Parsers)
         {
-            if (parser.TryParse(mem, sqsMessage, out var inner, out var metadata))
+            if (parser.TryParse(mem, sqsMessage, pool, out var inner, out var metadata))
             {
                 return (inner, metadata);
             }
