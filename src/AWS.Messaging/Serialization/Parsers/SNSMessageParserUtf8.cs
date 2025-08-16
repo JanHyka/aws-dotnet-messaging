@@ -85,10 +85,21 @@ internal sealed class SNSMessageParserUtf8 : IMessageParserUtf8
                 case "Message":
                     if (reader.TokenType == JsonTokenType.String)
                     {
-                        var inner = reader.GetString();
-                        if (string.IsNullOrEmpty(inner)) return false;
-                        // SNS Message as string: allocate only once here (unavoidable) but keep outer zero-copy
-                        messageBytes = Encoding.UTF8.GetBytes(inner);
+                        if (!reader.ValueIsEscaped && !reader.HasValueSequence)
+                        {
+                            // Fast path: unescaped contiguous value -> copy raw UTF-8 bytes
+                            var span = reader.ValueSpan;
+                            var bytes = new byte[span.Length];
+                            span.CopyTo(bytes);
+                            messageBytes = bytes;
+                        }
+                        else
+                        {
+                            // Fallback: materialize string to correctly unescape, then re-encode
+                            var inner = reader.GetString();
+                            if (string.IsNullOrEmpty(inner)) return false;
+                            messageBytes = Encoding.UTF8.GetBytes(inner);
+                        }
                     }
                     else if (reader.TokenType == JsonTokenType.StartObject || reader.TokenType == JsonTokenType.StartArray)
                     {

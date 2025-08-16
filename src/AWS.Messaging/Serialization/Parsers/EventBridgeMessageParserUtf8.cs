@@ -53,10 +53,21 @@ internal sealed class EventBridgeMessageParserUtf8 : IMessageParserUtf8
                     }
                     else if (reader.TokenType == JsonTokenType.String)
                     {
-                        var detail = reader.GetString();
-                        if (detail is null) return false;
-                        // allocation unavoidable as EventBridge detail is a string
-                        detailBytes = Encoding.UTF8.GetBytes(detail);
+                        if (!reader.ValueIsEscaped && !reader.HasValueSequence)
+                        {
+                            // Copy raw unescaped UTF-8 bytes directly (avoids string + re-encode)
+                            var span = reader.ValueSpan;
+                            var bytes = new byte[span.Length];
+                            span.CopyTo(bytes);
+                            detailBytes = bytes;
+                        }
+                        else
+                        {
+                            // Fallback: materialize to string to correctly unescape, then re-encode
+                            var detail = reader.GetString();
+                            if (detail is null) return false;
+                            detailBytes = Encoding.UTF8.GetBytes(detail);
+                        }
                     }
                     else
                     {
