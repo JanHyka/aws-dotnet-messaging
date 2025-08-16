@@ -198,7 +198,7 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
             var (envelopeBytes, metadata) = await ParseOuterWrapperUtf8Async(sqsMessage);
 
             // Create and populate the envelope with the correct type
-            var (envelope, subscriberMapping) = DeserializeEnvelopeUtf8(envelopeBytes.Span);
+            var (envelope, subscriberMapping) = DeserializeEnvelopeUtf8(envelopeBytes);
 
             // Add metadata from outer wrapper
             envelope.SQSMetadata = metadata.SQSMetadata;
@@ -287,7 +287,7 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
     }.ToFrozenSet();
 
     // New UTF-8 reader-based inner envelope deserialization.
-    private (MessageEnvelope Envelope, SubscriberMapping Mapping) DeserializeEnvelopeUtf8(ReadOnlySpan<byte> envelopeUtf8)
+    private (MessageEnvelope Envelope, SubscriberMapping Mapping) DeserializeEnvelopeUtf8(ReadOnlyMemory<byte> envelopeUtf8)
     {
         string? id = null;
         string? sourceStr = null;
@@ -299,7 +299,7 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
         string? dataString = null;
         Dictionary<string, JsonElement>? metadataTemp = null;
 
-        var reader = new Utf8JsonReader(envelopeUtf8, isFinalBlock: true, state: default);
+        var reader = new Utf8JsonReader(envelopeUtf8.Span, isFinalBlock: true, state: default);
         if (reader.TokenType == JsonTokenType.None && !reader.Read())
             throw new InvalidDataException("Invalid JSON for MessageEnvelope");
         if (reader.TokenType != JsonTokenType.StartObject)
@@ -353,11 +353,11 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
                 case "data":
                     if (IsJsonContentType(dataContentType))
                     {
-                        // Capture exact JSON bytes of the value
+                        // Capture exact JSON bytes of the value without allocation using the same backing memory
                         var start = (int)reader.TokenStartIndex;
                         reader.Skip();
                         var end = (int)reader.BytesConsumed;
-                        dataJsonBytes = new ReadOnlyMemory<byte>(envelopeUtf8.Slice(start, end - start).ToArray());
+                        dataJsonBytes = envelopeUtf8.Slice(start, end - start);
                     }
                     else
                     {
