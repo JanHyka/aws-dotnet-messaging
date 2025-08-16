@@ -3,6 +3,7 @@
 
 using System.Collections.Frozen;
 using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using System.Text.Json;
 using Amazon.SQS.Model;
 using AWS.Messaging.Configuration;
@@ -163,7 +164,7 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
             writer.WriteEndObject();
             writer.Flush();
 
-            var jsonString = System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
+            var jsonString = Encoding.UTF8.GetString(buffer.WrittenSpan);
             var serializedMessage = await InvokePostSerializationCallback(jsonString);
 
             if (_messageConfiguration.LogMessageContent)
@@ -193,11 +194,11 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
     {
         try
         {
-            // Get the raw envelope JSON and metadata from the appropriate wrapper (SNS/EventBridge/SQS)
-            var (envelopeJson, metadata) = await ParseOuterWrapper(sqsMessage);
+            // Get the raw envelope JSON and metadata from the appropriate wrapper (SNS/EventBridge/SQS) using UTF-8 path
+            var (envelopeBytes, metadata) = await ParseOuterWrapperUtf8Async(sqsMessage);
 
             // Create and populate the envelope with the correct type
-            var (envelope, subscriberMapping) = DeserializeEnvelope(envelopeJson);
+            var (envelope, subscriberMapping) = DeserializeEnvelopeUtf8(envelopeBytes.Span);
 
             // Add metadata from outer wrapper
             envelope.SQSMetadata = metadata.SQSMetadata;
@@ -223,7 +224,7 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
     private async Task<(ReadOnlyMemory<byte> MessageBody, MessageMetadata Metadata)> ParseOuterWrapperUtf8Async(Message sqsMessage)
     {
         var body = await InvokePreDeserializationCallback(sqsMessage.Body);
-        var utf8 = System.Text.Encoding.UTF8.GetBytes(body);
+        var utf8 = Encoding.UTF8.GetBytes(body);
 
         foreach (var parser in s_utf8Parsers)
         {
@@ -283,161 +284,158 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
         "data"
     }.ToFrozenSet();
 
-    private (MessageEnvelope Envelope, SubscriberMapping Mapping) DeserializeEnvelope(string envelopeString)
+    // New UTF-8 reader-based inner envelope deserialization.
+    private (MessageEnvelope Envelope, SubscriberMapping Mapping) DeserializeEnvelopeUtf8(ReadOnlySpan<byte> envelopeUtf8)
     {
-        using var document = JsonDocument.Parse(envelopeString);
-        var root = document.RootElement;
+        string? id = null;
+        string? sourceStr = null;
+        string? version = null;
+        string? typeId = null;
+        DateTimeOffset? timeStamp = null;
+        string? dataContentType = null;
+        ReadOnlyMemory<byte> dataJsonBytes = default;
+        string? dataString = null;
+        Dictionary<string, JsonElement>? metadataTemp = null;
 
-        // Get the message type and lookup mapping first
-        var messageType = root.GetProperty("type").GetString() ?? throw new InvalidDataException("Message type identifier not found in envelope");
-        var subscriberMapping = GetAndValidateSubscriberMapping(messageType);
+        var reader = new Utf8JsonReader(envelopeUtf8, isFinalBlock: true, state: default);
+        if (reader.TokenType == JsonTokenType.None && !reader.Read())
+            throw new InvalidDataException("Invalid JSON for MessageEnvelope");
+        if (reader.TokenType != JsonTokenType.StartObject)
+            throw new InvalidDataException("MessageEnvelope JSON must start with object");
 
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndObject)
+                break;
+            if (reader.TokenType != JsonTokenType.PropertyName)
+            {
+                reader.Skip();
+                continue;
+            }
+
+            var name = reader.GetString();
+            if (!reader.Read()) break;
+
+            switch (name)
+            {
+                case "id":
+                    if (reader.TokenType == JsonTokenType.String)
+                        id = reader.GetString();
+                    else reader.Skip();
+                    break;
+                case "source":
+                    if (reader.TokenType == JsonTokenType.String)
+                        sourceStr = reader.GetString();
+                    else reader.Skip();
+                    break;
+                case "specversion":
+                    if (reader.TokenType == JsonTokenType.String)
+                        version = reader.GetString();
+                    else reader.Skip();
+                    break;
+                case "type":
+                    if (reader.TokenType == JsonTokenType.String)
+                        typeId = reader.GetString();
+                    else reader.Skip();
+                    break;
+                case "time":
+                    if (reader.TokenType == JsonTokenType.String && reader.TryGetDateTimeOffset(out var dto))
+                        timeStamp = dto;
+                    else reader.Skip();
+                    break;
+                case "datacontenttype":
+                    if (reader.TokenType == JsonTokenType.String)
+                        dataContentType = reader.GetString();
+                    else reader.Skip();
+                    break;
+                case "data":
+                    if (IsJsonContentType(dataContentType))
+                    {
+                        // Capture exact JSON bytes of the value
+                        var start = (int)reader.TokenStartIndex;
+                        reader.Skip();
+                        var end = (int)reader.BytesConsumed;
+                        dataJsonBytes = new ReadOnlyMemory<byte>(envelopeUtf8.Slice(start, end - start).ToArray());
+                    }
+                    else
+                    {
+                        // Non-JSON content types are stored as string
+                        if (reader.TokenType == JsonTokenType.String)
+                        {
+                            dataString = reader.GetString();
+                        }
+                        else
+                        {
+                            reader.Skip();
+                        }
+                    }
+                    break;
+                default:
+                    if (!s_knownEnvelopeProperties.Contains(name!))
+                    {
+                        metadataTemp ??= new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+                        using var doc = JsonDocument.ParseValue(ref reader);
+                        metadataTemp[name!] = doc.RootElement.Clone();
+                    }
+                    else
+                    {
+                        reader.Skip();
+                    }
+                    break;
+            }
+        }
+
+        if (string.IsNullOrEmpty(typeId))
+            throw new InvalidDataException("Message type identifier not found in envelope");
+
+        var subscriberMapping = GetAndValidateSubscriberMapping(typeId);
         var envelope = subscriberMapping.MessageEnvelopeFactory.Invoke();
 
         try
         {
-            // Set envelope properties
-            envelope.Id = JsonPropertyHelper.GetRequiredProperty(root, "id", element => element.GetString()!);
-            envelope.Source = JsonPropertyHelper.GetRequiredProperty(root, "source", element => new Uri(element.GetString()!, UriKind.RelativeOrAbsolute));
-            envelope.Version = JsonPropertyHelper.GetRequiredProperty(root, "specversion", element => element.GetString()!);
-            envelope.MessageTypeIdentifier = JsonPropertyHelper.GetRequiredProperty(root, "type", element => element.GetString()!);
-            envelope.TimeStamp = JsonPropertyHelper.GetRequiredProperty(root, "time", element => element.GetDateTimeOffset());
-            envelope.DataContentType = JsonPropertyHelper.GetStringProperty(root, "datacontenttype");
+            envelope.Id = id ?? throw new InvalidDataException("Required property 'id' is missing");
+            envelope.Source = sourceStr is not null ? new Uri(sourceStr, UriKind.RelativeOrAbsolute) : throw new InvalidDataException("Required property 'source' is missing");
+            envelope.Version = version ?? throw new InvalidDataException("Required property 'specversion' is missing");
+            envelope.MessageTypeIdentifier = typeId;
+            envelope.TimeStamp = timeStamp ?? throw new InvalidDataException("Required property 'time' is missing or invalid");
+            envelope.DataContentType = dataContentType;
 
-            // Handle metadata - copy any properties that aren't standard envelope properties
-            foreach (var property in root.EnumerateObject())
+            if (metadataTemp is not null)
             {
-                if (!s_knownEnvelopeProperties.Contains(property.Name))
+                foreach (var kvp in metadataTemp)
                 {
-                    envelope.Metadata[property.Name] = property.Value.Clone();
+                    if (!s_knownEnvelopeProperties.Contains(kvp.Key))
+                    {
+                        envelope.Metadata[kvp.Key] = kvp.Value;
+                    }
                 }
             }
 
-            // Deserialize the message content using the custom serializer
-            var dataContent = JsonPropertyHelper.GetRequiredProperty(root, "data", element =>
-                IsJsonContentType(envelope.DataContentType)
-                    ? element.GetRawText()
-                    : element.GetString()!);
-            var message = _messageSerializer.Deserialize(dataContent, subscriberMapping.MessageType);
-            envelope.SetMessage(message);
+            object message;
+            if (IsJsonContentType(dataContentType))
+            {
+                if (_messageSerializerUtf8Json is not null)
+                {
+                    message = _messageSerializerUtf8Json.Deserialize(dataJsonBytes.Span, subscriberMapping.MessageType);
+                }
+                else
+                {
+                    var json = Encoding.UTF8.GetString(dataJsonBytes.Span);
+                    message = _messageSerializer.Deserialize(json, subscriberMapping.MessageType);
+                }
+            }
+            else
+            {
+                message = _messageSerializer.Deserialize(dataString ?? string.Empty, subscriberMapping.MessageType);
+            }
 
+            envelope.SetMessage(message);
             return (envelope, subscriberMapping);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to deserialize or validate MessageEnvelope");
             throw new InvalidDataException("MessageEnvelope instance is not valid", ex);
-        }
-    }
-
-    private async Task<(string MessageBody, MessageMetadata Metadata)> ParseOuterWrapper(Message sqsMessage)
-    {
-        sqsMessage.Body = await InvokePreDeserializationCallback(sqsMessage.Body);
-
-        // Example 1: SNS-wrapped message in SQS
-        /*
-        sqsMessage.Body = {
-            "Type": "Notification",
-            "MessageId": "abc-123",
-            "TopicArn": "arn:aws:sns:us-east-1:123456789012:MyTopic",
-            "Message": {
-                "id": "order-123",
-                "source": "com.myapp.orders",
-                "type": "OrderCreated",
-                "time": "2024-03-21T10:00:00Z",
-                "data": {
-                    "orderId": "12345",
-                    "amount": 99.99
-                }
-            }
-        }
-        */
-
-        // Example 2: Raw SQS message
-        /*
-        sqsMessage.Body = {
-            "id": "order-123",
-            "source": "com.myapp.orders",
-            "type": "OrderCreated",
-            "time": "2024-03-21T10:00:00Z",
-            "data": {
-                "orderId": "12345",
-                "amount": 99.99
-            }
-        }
-        */
-
-        var document = JsonDocument.Parse(sqsMessage.Body);
-
-        try
-        {
-            string currentMessageBody = sqsMessage.Body;
-            var combinedMetadata = new MessageMetadata();
-
-            // Try each parser in order
-            foreach (var parser in _parsers.Where(p => p.CanParse(document.RootElement)))
-            {
-                // Example 1 (SNS message) flow:
-                // 1. SNSMessageParser.CanParse = true (finds "Type": "Notification")
-                // 2. parser.Parse extracts inner message and SNS metadata
-                // 3. messageBody = contents of "Message" field
-                // 4. metadata contains SNS information (TopicArn, MessageId, etc.)
-
-                // Example 2 (Raw SQS) flow:
-                // 1. SNSMessageParser.CanParse = false (no SNS properties)
-                // 2. EventBridgeMessageParser.CanParse = false (no EventBridge properties)
-                // 3. SQSMessageParser.CanParse = true (fallback)
-                // 4. messageBody = original message
-                // 5. metadata contains just SQS information
-                var (messageBody, metadata) = parser.Parse(document.RootElement, sqsMessage);
-
-                // Update the message body if this parser extracted an inner message
-                if (!string.IsNullOrEmpty(messageBody))
-                {
-                    // For Example 1:
-                    // - Updates currentMessageBody to inner message
-                    // - Creates new JsonElement for next parser to check
-
-                    // For Example 2:
-                    // - This block runs but messageBody is same as original
-                    currentMessageBody = messageBody;
-                    document.Dispose();
-                    document = JsonDocument.Parse(messageBody);
-                }
-
-                // Combine metadata
-                if (metadata.SQSMetadata != null) combinedMetadata.SQSMetadata = metadata.SQSMetadata;
-                if (metadata.SNSMetadata != null) combinedMetadata.SNSMetadata = metadata.SNSMetadata;
-                if (metadata.EventBridgeMetadata != null) combinedMetadata.EventBridgeMetadata = metadata.EventBridgeMetadata;
-            }
-
-            // Example 1 final return:
-            // MessageBody = {
-            //     "id": "order-123",
-            //     "source": "com.myapp.orders",
-            //     "type": "OrderCreated",
-            //     "time": "2024-03-21T10:00:00Z",
-            //     "data": { ... }
-            // }
-            // Metadata = {
-            //     SNSMetadata: { TopicArn: "arn:aws...", MessageId: "abc-123" }
-            // }
-
-            // Example 2 final return:
-            // MessageBody = {
-            //     "id": "order-123",
-            //     "source": "com.myapp.orders",
-            //     "type": "OrderCreated",
-            //     "time": "2024-03-21T10:00:00Z",
-            //     "data": { ... }
-            // }
-            // Metadata = { } // Just basic SQS metadata
-
-            return (currentMessageBody, combinedMetadata);
-        }
-        finally
-        {
-            document.Dispose();
         }
     }
 

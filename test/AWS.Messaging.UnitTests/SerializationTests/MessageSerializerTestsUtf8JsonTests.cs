@@ -17,11 +17,11 @@ using Xunit;
 
 namespace AWS.Messaging.UnitTests.SerializationTests;
 
-public class MessageSerializerUtf8JsonWriterTests
+public class MessageSerializerUtf8JsonTests
 {
     private readonly FakeLogger<MessageSerializerUtf8Json> _logger;
 
-    public MessageSerializerUtf8JsonWriterTests()
+    public MessageSerializerUtf8JsonTests()
     {
         _logger = new FakeLogger<MessageSerializerUtf8Json>();
     }
@@ -179,7 +179,7 @@ public class MessageSerializerUtf8JsonWriterTests
                    ""Address"":{
                       ""Unit"":12,
                       ""Street"":""Prince St"",
-                      ""ZipCode"":""00001""
+                      ""ZipCode"":""00001""      
                    }
                 }";
 
@@ -212,7 +212,7 @@ public class MessageSerializerUtf8JsonWriterTests
                    ""Address"":{
                       ""Unit"":12,
                       ""Street"":""Prince St"",
-                      ""ZipCode"":""00001""
+                      ""ZipCode"":""00001""      
                    }
                 }";
 
@@ -282,7 +282,7 @@ public class MessageSerializerUtf8JsonWriterTests
     public void SerializeToBuffer_WritesExpectedJson(IMessageJsonSerializerContextContainer messageJsonSerializerContextFactory)
     {
         // ARRANGE
-        IMessageSerializerUtf8JsonWriter serializer = new MessageSerializerUtf8Json(new NullLogger<MessageSerializerUtf8Json>(), new MessageConfiguration(), messageJsonSerializerContextFactory);
+        IMessageSerializerUtf8Json serializer = new MessageSerializerUtf8Json(new NullLogger<MessageSerializerUtf8Json>(), new MessageConfiguration(), messageJsonSerializerContextFactory);
         var person = new PersonInfo
         {
             FirstName= "Bob",
@@ -317,7 +317,7 @@ public class MessageSerializerUtf8JsonWriterTests
     public void SerializeToBuffer_NoDataMessageLogging_NoError(IMessageJsonSerializerContextContainer messageJsonSerializerContextFactory)
     {
         var messageConfiguration = new MessageConfiguration();
-        IMessageSerializerUtf8JsonWriter serializer = new MessageSerializerUtf8Json(_logger, messageConfiguration, messageJsonSerializerContextFactory);
+        IMessageSerializerUtf8Json serializer = new MessageSerializerUtf8Json(_logger, messageConfiguration, messageJsonSerializerContextFactory);
 
         var person = new PersonInfo
         {
@@ -355,7 +355,7 @@ public class MessageSerializerUtf8JsonWriterTests
     public void SerializeToBuffer_DataMessageLogging_NoError(IMessageJsonSerializerContextContainer messageJsonSerializerContextFactory)
     {
         var messageConfiguration = new MessageConfiguration{ LogMessageContent = true };
-        IMessageSerializerUtf8JsonWriter serializer = new MessageSerializerUtf8Json(_logger, messageConfiguration, messageJsonSerializerContextFactory);
+        IMessageSerializerUtf8Json serializer = new MessageSerializerUtf8Json(_logger, messageConfiguration, messageJsonSerializerContextFactory);
 
         var person = new PersonInfo
         {
@@ -392,7 +392,7 @@ public class MessageSerializerUtf8JsonWriterTests
     public void SerializeToBuffer_NoDataMessageLogging_WithError()
     {
         var messageConfiguration = new MessageConfiguration();
-        IMessageSerializerUtf8JsonWriter serializer = new MessageSerializerUtf8Json(_logger, messageConfiguration, new NullMessageJsonSerializerContextContainer());
+        IMessageSerializerUtf8Json serializer = new MessageSerializerUtf8Json(_logger, messageConfiguration, new NullMessageJsonSerializerContextContainer());
 
         // Creating an object with circular dependency to force an exception in the JsonSerializer.Serialize method.
         var unsupportedType1 = new UnsupportedType { Name = "type1" };
@@ -414,7 +414,7 @@ public class MessageSerializerUtf8JsonWriterTests
     public void SerializeToBuffer_DataMessageLogging_WithError(IMessageJsonSerializerContextContainer messageJsonSerializerContextFactory)
     {
         var messageConfiguration = new MessageConfiguration{ LogMessageContent = true };
-        IMessageSerializerUtf8JsonWriter serializer = new MessageSerializerUtf8Json(_logger, messageConfiguration, messageJsonSerializerContextFactory);
+        IMessageSerializerUtf8Json serializer = new MessageSerializerUtf8Json(_logger, messageConfiguration, messageJsonSerializerContextFactory);
 
         // Creating an object with circular dependency to force an exception in the JsonSerializer.Serialize method.
         var unsupportedType1 = new UnsupportedType { Name = "type1" };
