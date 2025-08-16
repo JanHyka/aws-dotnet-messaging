@@ -1,8 +1,6 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-using System;
-using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using Amazon.SQS.Model;
@@ -13,18 +11,17 @@ namespace AWS.Messaging.Serialization.Parsers;
 
 internal sealed class SNSMessageParserUtf8 : IMessageParserUtf8
 {
-    public bool TryParse(ReadOnlySpan<byte> utf8Payload, Message originalMessage, out ReadOnlyMemory<byte> innerPayload, out MessageMetadata metadata)
+    public bool TryParse(ReadOnlyMemory<byte> utf8Payload, Message originalMessage, out ReadOnlyMemory<byte> innerPayload, out MessageMetadata metadata)
     {
         innerPayload = default;
         metadata = default!;
 
-        var reader = new Utf8JsonReader(utf8Payload, isFinalBlock: true, state: default);
+        var reader = new Utf8JsonReader(utf8Payload.Span, isFinalBlock: true, state: default);
         if (reader.TokenType == JsonTokenType.None && !reader.Read())
             return false;
         if (reader.TokenType != JsonTokenType.StartObject)
             return false;
 
-        // Track expected fields: Type == "Notification", TopicArn, MessageId, Message
         string? typeValue = null;
         string? topicArn = null;
         string? messageId = null;
@@ -90,16 +87,16 @@ internal sealed class SNSMessageParserUtf8 : IMessageParserUtf8
                     {
                         var inner = reader.GetString();
                         if (string.IsNullOrEmpty(inner)) return false;
-                        var bytes = Encoding.UTF8.GetBytes(inner);
-                        messageBytes = new ReadOnlyMemory<byte>(bytes);
+                        // SNS Message as string: allocate only once here (unavoidable) but keep outer zero-copy
+                        messageBytes = Encoding.UTF8.GetBytes(inner);
                     }
                     else if (reader.TokenType == JsonTokenType.StartObject || reader.TokenType == JsonTokenType.StartArray)
                     {
-                        // Some SNS deliveries can contain JSON object in Message; capture exact slice
+                        // JSON object in Message; capture zero-copy slice over original payload
                         var start = (int)reader.TokenStartIndex;
                         reader.Skip();
                         var end = (int)reader.BytesConsumed;
-                        messageBytes = new ReadOnlyMemory<byte>(utf8Payload.Slice(start, end - start).ToArray());
+                        messageBytes = utf8Payload.Slice(start, end - start);
                     }
                     else
                     {

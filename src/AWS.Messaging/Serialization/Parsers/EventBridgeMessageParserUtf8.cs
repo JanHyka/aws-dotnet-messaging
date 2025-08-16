@@ -10,12 +10,12 @@ namespace AWS.Messaging.Serialization.Parsers;
 
 internal sealed class EventBridgeMessageParserUtf8 : IMessageParserUtf8
 {
-    public bool TryParse(ReadOnlySpan<byte> utf8Payload, Message originalMessage, out ReadOnlyMemory<byte> innerPayload, out MessageMetadata metadata)
+    public bool TryParse(ReadOnlyMemory<byte> utf8Payload, Message originalMessage, out ReadOnlyMemory<byte> innerPayload, out MessageMetadata metadata)
     {
         innerPayload = default;
         metadata = default!;
 
-        var reader = new Utf8JsonReader(utf8Payload, isFinalBlock: true, state: default);
+        var reader = new Utf8JsonReader(utf8Payload.Span, isFinalBlock: true, state: default);
         if (reader.TokenType == JsonTokenType.None && !reader.Read())
             return false;
         if (reader.TokenType != JsonTokenType.StartObject)
@@ -24,7 +24,7 @@ internal sealed class EventBridgeMessageParserUtf8 : IMessageParserUtf8
         bool hasDetail = false, hasDetailType = false, hasSource = false, hasTime = false;
         ReadOnlyMemory<byte> detailBytes = default;
         string? id = null, source = null, account = null, region = null, detailType = null;
-        DateTimeOffset? time = null;
+        DateTimeOffset time = default;
         List<string>? resources = null;
 
         while (reader.Read())
@@ -49,13 +49,14 @@ internal sealed class EventBridgeMessageParserUtf8 : IMessageParserUtf8
                         var start = (int)reader.TokenStartIndex;
                         reader.Skip();
                         var end = (int)reader.BytesConsumed;
-                        detailBytes = new ReadOnlyMemory<byte>(utf8Payload.Slice(start, end - start).ToArray());
+                        detailBytes = utf8Payload.Slice(start, end - start);
                     }
                     else if (reader.TokenType == JsonTokenType.String)
                     {
                         var detail = reader.GetString();
                         if (detail is null) return false;
-                        detailBytes = new ReadOnlyMemory<byte>(Encoding.UTF8.GetBytes(detail));
+                        // allocation unavoidable as EventBridge detail is a string
+                        detailBytes = Encoding.UTF8.GetBytes(detail);
                     }
                     else
                     {
@@ -74,6 +75,11 @@ internal sealed class EventBridgeMessageParserUtf8 : IMessageParserUtf8
                     if (reader.TokenType == JsonTokenType.String && reader.TryGetDateTimeOffset(out var dto))
                     {
                         time = dto;
+                        hasTime = true;
+                    }
+                    else
+                    {
+                        reader.Skip();
                     }
                     break;
                 case "id":
@@ -124,7 +130,7 @@ internal sealed class EventBridgeMessageParserUtf8 : IMessageParserUtf8
                 EventId = id,
                 DetailType = detailType,
                 Source = source,
-                Time = time ?? default,
+                Time = time,
                 AWSAccount = account,
                 AWSRegion = region,
                 Resources = resources

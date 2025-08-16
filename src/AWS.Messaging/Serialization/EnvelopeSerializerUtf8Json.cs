@@ -224,18 +224,20 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
     private async Task<(ReadOnlyMemory<byte> MessageBody, MessageMetadata Metadata)> ParseOuterWrapperUtf8Async(Message sqsMessage)
     {
         var body = await InvokePreDeserializationCallback(sqsMessage.Body);
+        // Use a single backing array to allow zero-copy slicing in parsers
         var utf8 = Encoding.UTF8.GetBytes(body);
+        var mem = new ReadOnlyMemory<byte>(utf8);
 
         foreach (var parser in s_utf8Parsers)
         {
-            if (parser.TryParse(utf8, sqsMessage, out var inner, out var metadata))
+            if (parser.TryParse(mem, sqsMessage, out var inner, out var metadata))
             {
                 return (inner, metadata);
             }
         }
 
         // Should not happen because SQS fallback always matches
-        return (utf8, new MessageMetadata());
+        return (mem, new MessageMetadata());
     }
 
     private bool IsJsonContentType(string? dataContentType)
