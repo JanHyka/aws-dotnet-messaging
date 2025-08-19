@@ -1,6 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+using System;
+using System.Buffers;
+using System.Text;
+using System.Text.Json;
 using Amazon.SQS.Model;
 using AWS.Messaging.Serialization.Helpers;
 
@@ -12,6 +16,14 @@ namespace AWS.Messaging.Serialization.Parsers;
 /// </summary>
 internal interface IMessageParserUtf8
 {
+    /// <summary>
+    /// Optional fast-path check on the raw bytes to determine if this parser likely matches.
+    /// Should be cheap (e.g., IndexOf on small tokens) and not allocate.
+    /// </summary>
+    /// <param name="utf8Payload">The input payload as UTF-8 bytes.</param>
+    /// <returns>True if the parser likely matches; otherwise false.</returns>
+    bool QuickMatch(ReadOnlySpan<byte> utf8Payload);
+
     /// <summary>
     /// Attempts to parse the given payload as a specific outer wrapper (e.g. SNS, EventBridge).
     /// On success, returns the inner message payload and aggregated metadata.

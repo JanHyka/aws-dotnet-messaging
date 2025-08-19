@@ -40,15 +40,6 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
 
     private readonly IMessageSerializerUtf8Json? _messageSerializerUtf8Json;
 
-    // Order matters for the SQS parser (must be last), but SNS and EventBridge parsers
-    // can be in any order since they check for different, mutually exclusive properties
-    private static readonly IMessageParser[] _parsers = new IMessageParser[]
-    {
-        new SNSMessageParser(), // Checks for SNS-specific properties (Type, TopicArn)
-        new EventBridgeMessageParser(), // Checks for EventBridge properties (detail-type, detail)
-        new SQSMessageParser() // Fallback parser - must be last
-    };
-
     // Reader-based parsers (UTF-8 path). Order matters: fallback SQS must be last.
     private static readonly IMessageParserUtf8[] s_utf8Parsers = new IMessageParserUtf8[]
     {
@@ -200,7 +191,7 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
             var (envelopeBytes, metadata) = await ParseOuterWrapperUtf8Async(sqsMessage, arrayPoolScope);
 
             // Create and populate the envelope with the correct type
-            var (envelope, subscriberMapping) = DeserializeEnvelopeUtf8(envelopeBytes);
+            var (envelope, subscriberMapping) = DeserializeEnvelopeUtf8(envelopeBytes, arrayPoolScope);
 
             // Add metadata from outer wrapper
             envelope.SQSMetadata = metadata.SQSMetadata;
@@ -227,20 +218,28 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
     {
         var body = await InvokePreDeserializationCallback(sqsMessage.Body);
         // Use a single backing array to allow zero-copy slicing in parsers
-        var bytesNeeded = Encoding.UTF8.GetByteCount(body);
-        var utf8 = pool.GetBuffer(bytesNeeded);
+        // Avoid double pass over input: allocate using worst-case UTF-8 size, then encode once.
+        var maxBytesNeeded = Encoding.UTF8.GetMaxByteCount(body.Length);
+        var utf8 = pool.GetBuffer(maxBytesNeeded);
         var written = Encoding.UTF8.GetBytes(body.AsSpan(), utf8);
         var mem = new ReadOnlyMemory<byte>(utf8, 0, written);
 
+        // Use parser QuickMatch to pick a likely parser first
         foreach (var parser in s_utf8Parsers)
         {
-            if (parser.TryParse(mem, sqsMessage, pool, out var inner, out var metadata))
+            if (parser.QuickMatch(mem.Span) && parser.TryParse(mem, sqsMessage, pool, out var inner, out var metadata))
             {
                 return (inner, metadata);
             }
         }
 
-        // Should not happen because SQS fallback always matches
+        // Safety net: try all parsers in order (should not be needed)
+        foreach (var parser in s_utf8Parsers)
+        {
+            if (parser.TryParse(mem, sqsMessage, pool, out var inner, out var metadata))
+                return (inner, metadata);
+        }
+
         return (mem, new MessageMetadata());
     }
 
@@ -291,7 +290,7 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
     }.ToFrozenSet();
 
     // New UTF-8 reader-based inner envelope deserialization.
-    private (MessageEnvelope Envelope, SubscriberMapping Mapping) DeserializeEnvelopeUtf8(ReadOnlyMemory<byte> envelopeUtf8)
+    private (MessageEnvelope Envelope, SubscriberMapping Mapping) DeserializeEnvelopeUtf8(ReadOnlyMemory<byte> envelopeUtf8, ArrayPoolScope pool)
     {
         string? id = null;
         string? sourceStr = null;
@@ -299,8 +298,8 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
         string? typeId = null;
         DateTimeOffset? timeStamp = null;
         string? dataContentType = null;
-        ReadOnlyMemory<byte> dataJsonBytes = default;
-        string? dataString = null;
+        ReadOnlyMemory<byte> dataJsonBytes = default; // holds JSON value bytes or unescaped string bytes
+        bool dataIsJson = false; // capture once at parse time to avoid re-evaluating content type and handle out-of-order properties
         Dictionary<string, JsonElement>? metadataTemp = null;
 
         var reader = new Utf8JsonReader(envelopeUtf8.Span, isFinalBlock: true, state: default);
@@ -325,37 +324,27 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
             switch (name)
             {
                 case "id":
-                    if (reader.TokenType == JsonTokenType.String)
-                        id = reader.GetString();
-                    else reader.Skip();
+                    id = reader.GetString();
                     break;
                 case "source":
-                    if (reader.TokenType == JsonTokenType.String)
-                        sourceStr = reader.GetString();
-                    else reader.Skip();
+                    sourceStr = reader.GetString();
                     break;
                 case "specversion":
-                    if (reader.TokenType == JsonTokenType.String)
-                        version = reader.GetString();
-                    else reader.Skip();
+                    version = reader.GetString();
                     break;
                 case "type":
-                    if (reader.TokenType == JsonTokenType.String)
-                        typeId = reader.GetString();
-                    else reader.Skip();
+                    typeId = reader.GetString();
                     break;
                 case "time":
-                    if (reader.TokenType == JsonTokenType.String && reader.TryGetDateTimeOffset(out var dto))
-                        timeStamp = dto;
-                    else reader.Skip();
+                    timeStamp = reader.GetDateTimeOffset();
                     break;
                 case "datacontenttype":
-                    if (reader.TokenType == JsonTokenType.String)
-                        dataContentType = reader.GetString();
-                    else reader.Skip();
+                    dataContentType = reader.GetString();
+                    dataIsJson = IsJsonContentType(dataContentType);
                     break;
                 case "data":
-                    if (IsJsonContentType(dataContentType))
+                    
+                    if (dataIsJson)
                     {
                         // Capture exact JSON bytes of the value without allocation using the same backing memory
                         var start = (int)reader.TokenStartIndex;
@@ -365,15 +354,8 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
                     }
                     else
                     {
-                        // Non-JSON content types are stored as string
-                        if (reader.TokenType == JsonTokenType.String)
-                        {
-                            dataString = reader.GetString();
-                        }
-                        else
-                        {
-                            reader.Skip();
-                        }
+                        // Non-JSON content types must be JSON string tokens; unescape into pooled UTF-8 bytes.
+                        dataJsonBytes = Utf8JsonReaderHelper.UnescapeValue(ref reader, pool);
                     }
                     break;
                 default:
@@ -410,29 +392,21 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
             {
                 foreach (var kvp in metadataTemp)
                 {
-                    if (!s_knownEnvelopeProperties.Contains(kvp.Key))
-                    {
-                        envelope.Metadata[kvp.Key] = kvp.Value;
-                    }
+                    envelope.Metadata[kvp.Key] = kvp.Value;
                 }
             }
 
+            // Deserialize the inner message
             object message;
-            if (IsJsonContentType(dataContentType))
+            if (dataIsJson && _messageSerializerUtf8Json is not null)
             {
-                if (_messageSerializerUtf8Json is not null)
-                {
-                    message = _messageSerializerUtf8Json.Deserialize(dataJsonBytes.Span, subscriberMapping.MessageType);
-                }
-                else
-                {
-                    var json = Encoding.UTF8.GetString(dataJsonBytes.Span);
-                    message = _messageSerializer.Deserialize(json, subscriberMapping.MessageType);
-                }
+                message = _messageSerializerUtf8Json!.Deserialize(dataJsonBytes.Span, subscriberMapping.MessageType);
             }
             else
             {
-                message = _messageSerializer.Deserialize(dataString ?? string.Empty, subscriberMapping.MessageType);
+                // Fallback to string-based deserializer (also used for non-JSON content types)
+                var text = Encoding.UTF8.GetString(dataJsonBytes.Span);
+                message = _messageSerializer.Deserialize(text, subscriberMapping.MessageType);
             }
 
             envelope.SetMessage(message);

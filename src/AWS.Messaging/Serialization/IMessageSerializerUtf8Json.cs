@@ -28,14 +28,6 @@ public interface IMessageSerializerUtf8Json
     object Deserialize(ReadOnlySpan<byte> utf8Json, Type deserializedType);
 
     /// <summary>
-    /// Deserializes from an existing Utf8JsonReader into the specified .NET type.
-    /// </summary>
-    /// <param name="reader">An existing Utf8JsonReader positioned at the start of the value.</param>
-    /// <param name="deserializedType">The target .NET type.</param>
-    /// <returns>The deserialized object.</returns>
-    object Deserialize(ref Utf8JsonReader reader, Type deserializedType);
-
-    /// <summary>
     /// Gets the MIME type of the content.
     /// </summary>
     string ContentType { get; }

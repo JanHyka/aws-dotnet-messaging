@@ -10,6 +10,8 @@ namespace AWS.Messaging.Serialization.Parsers;
 
 internal sealed class SQSMessageParserUtf8 : IMessageParserUtf8
 {
+    public bool QuickMatch(ReadOnlySpan<byte> utf8Payload) => true; // always matches as fallback
+
     public bool TryParse(ReadOnlyMemory<byte> utf8Payload, Message originalMessage, ArrayPoolScope pool, out ReadOnlyMemory<byte> innerPayload, out MessageMetadata metadata)
     {
         // SQS fallback: always matches and returns original payload and SQS metadata with zero-copy slice.
