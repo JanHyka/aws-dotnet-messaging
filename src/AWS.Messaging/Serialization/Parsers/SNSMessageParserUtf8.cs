@@ -15,6 +15,16 @@ internal sealed class SNSMessageParserUtf8 : IMessageParserUtf8
     private static readonly byte[] s_tokenTypeNotification = Encoding.UTF8.GetBytes("\"Type\":\"Notification\"");
     private static readonly byte[] s_tokenTopicArn = Encoding.UTF8.GetBytes("\"TopicArn\"");
 
+    // Property name tokens
+    private static readonly byte[] s_propType = Encoding.UTF8.GetBytes("Type");
+    private static readonly byte[] s_propTopicArn = Encoding.UTF8.GetBytes("TopicArn");
+    private static readonly byte[] s_propMessageId = Encoding.UTF8.GetBytes("MessageId");
+    private static readonly byte[] s_propTimestamp = Encoding.UTF8.GetBytes("Timestamp");
+    private static readonly byte[] s_propSubject = Encoding.UTF8.GetBytes("Subject");
+    private static readonly byte[] s_propUnsubscribeUrl = Encoding.UTF8.GetBytes("UnsubscribeURL");
+    private static readonly byte[] s_propMessageAttributes = Encoding.UTF8.GetBytes("MessageAttributes");
+    private static readonly byte[] s_propMessage = Encoding.UTF8.GetBytes("Message");
+
     public bool QuickMatch(ReadOnlySpan<byte> utf8Payload)
     {
         var span = utf8Payload.Length <= 2048 ? utf8Payload : utf8Payload.Slice(0, 2048);
@@ -55,80 +65,93 @@ internal sealed class SNSMessageParserUtf8 : IMessageParserUtf8
                     continue;
                 }
 
-                var name = reader.GetString();
-                if (!reader.Read()) break;
-
-                switch (name)
+                if (reader.ValueTextEquals(s_propType))
                 {
-                    case "Type":
-                        typeValue = reader.GetString();
-                        hasType = true;
-                        break;
-                    case "TopicArn":
-                        topicArn = reader.GetString();
-                        hasTopicArn = true;
-                        break;
-                    case "MessageId":
-                        messageId = reader.GetString();
-                        hasMessageId = true;
-                        break;
-                    case "Timestamp":
-                        timestamp = reader.GetDateTimeOffset();
-                        break;
-                    case "Subject":
-                        subject = reader.GetString();
-                        break;
-                    case "UnsubscribeURL":
-                        unsubscribeUrl = reader.GetString();
-                        break;
-                    case "MessageAttributes":
-                        if (reader.TokenType == JsonTokenType.StartObject)
-                        {
-                            try
-                            {
-                                var dict = JsonSerializer.Deserialize(ref reader, MessagingJsonSerializerContext.Default.DictionarySNSMessageAttributeValue);
-                                messageAttributes = dict;
-                            }
-                            catch
-                            {
-                                // ignore malformed attributes
-                                reader.Skip();
-                            }
-                        }
-                        else
-                        {
-                            // unexpected token for MessageAttributes -> fail fast
-                            throw new JsonException("Invalid 'MessageAttributes' token");
-                        }
-                        break;
-                    case "Message":
-                        if (reader.TokenType == JsonTokenType.String)
-                        {
-                            messageBytes = Utf8JsonReaderHelper.UnescapeValue(ref reader, pool);
-                        }
-                        else if (reader.TokenType == JsonTokenType.StartObject || reader.TokenType == JsonTokenType.StartArray)
-                        {
-                            // JSON object/array in Message; capture zero-copy slice over original payload
-                            var start = (int)reader.TokenStartIndex;
-                            reader.Skip();
-                            var end = (int)reader.BytesConsumed;
-                            messageBytes = utf8Payload.Slice(start, end - start);
-                        }
-                        else
-                        {
-                            // unexpected token for Message -> fail fast
-                            throw new JsonException("Invalid 'Message' token");
-                        }
-                        break;
-                    default:
-                        reader.Skip();
-                        break;
+                    reader.Read();
+                    typeValue = reader.GetString();
+                    hasType = true;
+                    continue;
                 }
+                if (reader.ValueTextEquals(s_propTopicArn))
+                {
+                    reader.Read();
+                    topicArn = reader.GetString();
+                    hasTopicArn = true;
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propMessageId))
+                {
+                    reader.Read();
+                    messageId = reader.GetString();
+                    hasMessageId = true;
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propTimestamp))
+                {
+                    reader.Read();
+                    timestamp = reader.GetDateTimeOffset();
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propSubject))
+                {
+                    reader.Read();
+                    subject = reader.GetString();
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propUnsubscribeUrl))
+                {
+                    reader.Read();
+                    unsubscribeUrl = reader.GetString();
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propMessageAttributes))
+                {
+                    reader.Read();
+                    if (reader.TokenType == JsonTokenType.StartObject)
+                    {
+                        try
+                        {
+                            var dict = JsonSerializer.Deserialize(ref reader, MessagingJsonSerializerContext.Default.DictionarySNSMessageAttributeValue);
+                            messageAttributes = dict;
+                        }
+                        catch
+                        {
+                            reader.Skip();
+                        }
+                    }
+                    else
+                    {
+                        throw new JsonException("Invalid 'MessageAttributes' token");
+                    }
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propMessage))
+                {
+                    reader.Read();
+                    if (reader.TokenType == JsonTokenType.String)
+                    {
+                        messageBytes = Utf8JsonReaderHelper.UnescapeValue(ref reader, pool);
+                    }
+                    else if (reader.TokenType == JsonTokenType.StartObject || reader.TokenType == JsonTokenType.StartArray)
+                    {
+                        var start = (int)reader.TokenStartIndex;
+                        reader.Skip();
+                        var end = (int)reader.BytesConsumed;
+                        messageBytes = utf8Payload.Slice(start, end - start);
+                    }
+                    else
+                    {
+                        throw new JsonException("Invalid 'Message' token");
+                    }
+                    continue;
+                }
+
+                // Unknown property: skip
+                reader.Skip();
             }
         }
-        catch (Exception ex) when (ex is JsonException || ex is System.InvalidOperationException || ex is System.FormatException)
+        catch (Exception ex) when (ex is JsonException || ex is InvalidOperationException || ex is FormatException)
         {
-            // TryParse contract: don't throw on failure
             return false;
         }
 

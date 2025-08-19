@@ -14,6 +14,16 @@ internal sealed class EventBridgeMessageParserUtf8 : IMessageParserUtf8
     private static readonly byte[] s_tokenDetailType = Encoding.UTF8.GetBytes("\"detail-type\"");
     private static readonly byte[] s_tokenDetail = Encoding.UTF8.GetBytes("\"detail\"");
 
+    // Property name tokens
+    private static readonly byte[] s_propDetail = Encoding.UTF8.GetBytes("detail");
+    private static readonly byte[] s_propDetailTypeName = Encoding.UTF8.GetBytes("detail-type");
+    private static readonly byte[] s_propSource = Encoding.UTF8.GetBytes("source");
+    private static readonly byte[] s_propTime = Encoding.UTF8.GetBytes("time");
+    private static readonly byte[] s_propId = Encoding.UTF8.GetBytes("id");
+    private static readonly byte[] s_propAccount = Encoding.UTF8.GetBytes("account");
+    private static readonly byte[] s_propRegion = Encoding.UTF8.GetBytes("region");
+    private static readonly byte[] s_propResources = Encoding.UTF8.GetBytes("resources");
+
     public bool QuickMatch(ReadOnlySpan<byte> utf8Payload)
     {
         var span = utf8Payload.Length <= 2048 ? utf8Payload : utf8Payload.Slice(0, 2048);
@@ -49,77 +59,92 @@ internal sealed class EventBridgeMessageParserUtf8 : IMessageParserUtf8
                     continue;
                 }
 
-                var name = reader.GetString();
-                if (!reader.Read()) break;
-
-                switch (name)
+                if (reader.ValueTextEquals(s_propDetail))
                 {
-                    case "detail":
-                        hasDetail = true;
-                        if (reader.TokenType == JsonTokenType.StartObject || reader.TokenType == JsonTokenType.StartArray)
-                        {
-                            var start = (int)reader.TokenStartIndex;
-                            reader.Skip();
-                            var end = (int)reader.BytesConsumed;
-                            detailBytes = utf8Payload.Slice(start, end - start);
-                        }
-                        else if (reader.TokenType == JsonTokenType.String)
-                        {
-                            detailBytes = Utf8JsonReaderHelper.UnescapeValue(ref reader, pool);
-                        }
-                        else
-                        {
-                            // unexpected token for detail -> fail fast
-                            throw new JsonException("Invalid 'detail' token");
-                        }
-                        break;
-                    case "detail-type":
-                        detailType = reader.GetString();
-                        hasDetailType = true;
-                        break;
-                    case "source":
-                        source = reader.GetString();
-                        hasSource = true;
-                        break;
-                    case "time":
-                        time = reader.GetDateTimeOffset();
-                        hasTime = true;
-                        break;
-                    case "id":
-                        id = reader.GetString();
-                        break;
-                    case "account":
-                        account = reader.GetString();
-                        break;
-                    case "region":
-                        region = reader.GetString();
-                        break;
-                    case "resources":
-                        if (reader.TokenType == JsonTokenType.StartArray)
-                        {
-                            resources = new List<string>();
-                            while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
-                            {
-                                // Let GetString throw for invalid tokens
-                                var v = reader.GetString();
-                                if (!string.IsNullOrEmpty(v)) resources.Add(v);
-                            }
-                        }
-                        else
-                        {
-                            // unexpected token for resources -> fail fast
-                            throw new JsonException("Invalid 'resources' token");
-                        }
-                        break;
-                    default:
+                    reader.Read();
+                    hasDetail = true;
+                    if (reader.TokenType == JsonTokenType.StartObject || reader.TokenType == JsonTokenType.StartArray)
+                    {
+                        var start = (int)reader.TokenStartIndex;
                         reader.Skip();
-                        break;
+                        var end = (int)reader.BytesConsumed;
+                        detailBytes = utf8Payload.Slice(start, end - start);
+                    }
+                    else if (reader.TokenType == JsonTokenType.String)
+                    {
+                        detailBytes = Utf8JsonReaderHelper.UnescapeValue(ref reader, pool);
+                    }
+                    else
+                    {
+                        throw new JsonException("Invalid 'detail' token");
+                    }
+                    continue;
                 }
+
+                if (reader.ValueTextEquals(s_propDetailTypeName))
+                {
+                    reader.Read();
+                    detailType = reader.GetString();
+                    hasDetailType = true;
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propSource))
+                {
+                    reader.Read();
+                    source = reader.GetString();
+                    hasSource = true;
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propTime))
+                {
+                    reader.Read();
+                    time = reader.GetDateTimeOffset();
+                    hasTime = true;
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propId))
+                {
+                    reader.Read();
+                    id = reader.GetString();
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propAccount))
+                {
+                    reader.Read();
+                    account = reader.GetString();
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propRegion))
+                {
+                    reader.Read();
+                    region = reader.GetString();
+                    continue;
+                }
+                if (reader.ValueTextEquals(s_propResources))
+                {
+                    reader.Read();
+                    if (reader.TokenType == JsonTokenType.StartArray)
+                    {
+                        resources = new List<string>();
+                        while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+                        {
+                            var v = reader.GetString();
+                            if (!string.IsNullOrEmpty(v)) resources.Add(v);
+                        }
+                    }
+                    else
+                    {
+                        throw new JsonException("Invalid 'resources' token");
+                    }
+                    continue;
+                }
+
+                // Unknown property: skip
+                reader.Skip();
             }
         }
-        catch (Exception ex) when (ex is JsonException || ex is System.InvalidOperationException || ex is System.FormatException)
+        catch (Exception ex) when (ex is JsonException || ex is InvalidOperationException || ex is FormatException)
         {
-            // TryParse contract: no exceptions on failure
             return false;
         }
 

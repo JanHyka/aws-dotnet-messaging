@@ -31,6 +31,15 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
     private static readonly JsonEncodedText s_dataContentTypeProp = JsonEncodedText.Encode("datacontenttype");
     private static readonly JsonEncodedText s_dataProp = JsonEncodedText.Encode("data");
 
+    // UTF-8 name tokens for fast property comparison in reader
+    private static readonly byte[] s_propId = Encoding.UTF8.GetBytes("id");
+    private static readonly byte[] s_propSource = Encoding.UTF8.GetBytes("source");
+    private static readonly byte[] s_propSpecVersion = Encoding.UTF8.GetBytes("specversion");
+    private static readonly byte[] s_propType = Encoding.UTF8.GetBytes("type");
+    private static readonly byte[] s_propTime = Encoding.UTF8.GetBytes("time");
+    private static readonly byte[] s_propDataContentType = Encoding.UTF8.GetBytes("datacontenttype");
+    private static readonly byte[] s_propData = Encoding.UTF8.GetBytes("data");
+
     private readonly IMessageConfiguration _messageConfiguration;
     private readonly IMessageSerializer _messageSerializer;
     private readonly IDateTimeHandler _dateTimeHandler;
@@ -233,13 +242,6 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
             }
         }
 
-        // Safety net: try all parsers in order (should not be needed)
-        foreach (var parser in s_utf8Parsers)
-        {
-            if (parser.TryParse(mem, sqsMessage, pool, out var inner, out var metadata))
-                return (inner, metadata);
-        }
-
         return (mem, new MessageMetadata());
     }
 
@@ -298,8 +300,11 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
         string? typeId = null;
         DateTimeOffset? timeStamp = null;
         string? dataContentType = null;
-        ReadOnlyMemory<byte> dataJsonBytes = default; // holds JSON value bytes or unescaped string bytes
-        bool dataIsJson = false; // capture once at parse time to avoid re-evaluating content type and handle out-of-order properties
+
+        // Capture of data property
+        ReadOnlyMemory<byte> dataBytes = default; // either JSON value bytes or unescaped string bytes
+        bool dataWasString = false;
+
         Dictionary<string, JsonElement>? metadataTemp = null;
 
         var reader = new Utf8JsonReader(envelopeUtf8.Span, isFinalBlock: true, state: default);
@@ -318,59 +323,68 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
                 continue;
             }
 
+            if (reader.ValueTextEquals(s_propId))
+            {
+                reader.Read();
+                id = reader.GetString();
+                continue;
+            }
+            if (reader.ValueTextEquals(s_propSource))
+            {
+                reader.Read();
+                sourceStr = reader.GetString();
+                continue;
+            }
+            if (reader.ValueTextEquals(s_propSpecVersion))
+            {
+                reader.Read();
+                version = reader.GetString();
+                continue;
+            }
+            if (reader.ValueTextEquals(s_propType))
+            {
+                reader.Read();
+                typeId = reader.GetString();
+                continue;
+            }
+            if (reader.ValueTextEquals(s_propTime))
+            {
+                reader.Read();
+                timeStamp = reader.GetDateTimeOffset();
+                continue;
+            }
+            if (reader.ValueTextEquals(s_propDataContentType))
+            {
+                reader.Read();
+                dataContentType = reader.GetString();
+                continue;
+            }
+            if (reader.ValueTextEquals(s_propData))
+            {
+                reader.Read();
+                // Defer interpretation until after we know datacontenttype. Capture bytes now.
+                if (reader.TokenType == JsonTokenType.String)
+                {
+                    dataWasString = true;
+                    dataBytes = Utf8JsonReaderHelper.UnescapeValue(ref reader, pool);
+                }
+                else
+                {
+                    var start = (int)reader.TokenStartIndex;
+                    reader.Skip();
+                    var end = (int)reader.BytesConsumed;
+                    dataBytes = envelopeUtf8.Slice(start, end - start);
+                    dataWasString = false;
+                }
+                continue;
+            }
+
+            // Unknown metadata property: materialize name string and capture value
             var name = reader.GetString();
             if (!reader.Read()) break;
-
-            switch (name)
-            {
-                case "id":
-                    id = reader.GetString();
-                    break;
-                case "source":
-                    sourceStr = reader.GetString();
-                    break;
-                case "specversion":
-                    version = reader.GetString();
-                    break;
-                case "type":
-                    typeId = reader.GetString();
-                    break;
-                case "time":
-                    timeStamp = reader.GetDateTimeOffset();
-                    break;
-                case "datacontenttype":
-                    dataContentType = reader.GetString();
-                    dataIsJson = IsJsonContentType(dataContentType);
-                    break;
-                case "data":
-                    
-                    if (dataIsJson)
-                    {
-                        // Capture exact JSON bytes of the value without allocation using the same backing memory
-                        var start = (int)reader.TokenStartIndex;
-                        reader.Skip();
-                        var end = (int)reader.BytesConsumed;
-                        dataJsonBytes = envelopeUtf8.Slice(start, end - start);
-                    }
-                    else
-                    {
-                        // Non-JSON content types must be JSON string tokens; unescape into pooled UTF-8 bytes.
-                        dataJsonBytes = Utf8JsonReaderHelper.UnescapeValue(ref reader, pool);
-                    }
-                    break;
-                default:
-                    if (!s_knownEnvelopeProperties.Contains(name!))
-                    {
-                        metadataTemp ??= new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-                        using var doc = JsonDocument.ParseValue(ref reader);
-                        metadataTemp[name!] = doc.RootElement.Clone();
-                    }
-                    else
-                    {
-                        reader.Skip();
-                    }
-                    break;
-            }
+            metadataTemp ??= new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            using var doc = JsonDocument.ParseValue(ref reader);
+            metadataTemp[name!] = doc.RootElement.Clone();
         }
 
         if (string.IsNullOrEmpty(typeId))
@@ -396,16 +410,31 @@ internal class EnvelopeSerializerUtf8Json : IEnvelopeSerializer
                 }
             }
 
-            // Deserialize the inner message
+            // Decide how to interpret captured data now that we know the content type
+            bool dataIsJson = IsJsonContentType(dataContentType);
+
             object message;
-            if (dataIsJson && _messageSerializerUtf8Json is not null)
+            if (dataIsJson)
             {
-                message = _messageSerializerUtf8Json!.Deserialize(dataJsonBytes.Span, subscriberMapping.MessageType);
+                // If original token was a JSON string, dataBytes already holds unescaped inner JSON text.
+                if (_messageSerializerUtf8Json is not null)
+                {
+                    message = _messageSerializerUtf8Json.Deserialize(dataBytes.Span, subscriberMapping.MessageType);
+                }
+                else
+                {
+                    var json = Encoding.UTF8.GetString(dataBytes.Span);
+                    message = _messageSerializer.Deserialize(json, subscriberMapping.MessageType);
+                }
             }
             else
             {
-                // Fallback to string-based deserializer (also used for non-JSON content types)
-                var text = Encoding.UTF8.GetString(dataJsonBytes.Span);
+                // Non-JSON content types require data to be a JSON string token
+                if (!dataWasString)
+                {
+                    throw new InvalidDataException("Non-JSON datacontenttype requires 'data' to be a JSON string token");
+                }
+                var text = Encoding.UTF8.GetString(dataBytes.Span);
                 message = _messageSerializer.Deserialize(text, subscriberMapping.MessageType);
             }
 
