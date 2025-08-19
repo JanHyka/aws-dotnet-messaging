@@ -6,6 +6,7 @@ public class Program
 {
     public static void Main(string[] args)
     {
-        BenchmarkRunner.Run<SerializationBenchmarks>();
+        //BenchmarkRunner.Run<SerializationBenchmarks>();
+        BenchmarkRunner.Run<ConvertToEnvelopeBenchmarks>();
     }
 }
